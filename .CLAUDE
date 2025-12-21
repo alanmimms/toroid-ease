@@ -1,0 +1,245 @@
+# Project: Toroid-Ease (NexRig FPC Inductor Generator)
+
+## Abstract
+
+**Toroid-Ease** is a Python-based design automation tool for KiCad 9.
+  It generates manufacturing files for **Flexible Printed Circuits
+  (FPC)** that serve as high-performance, repeatable toroidal inductor
+  windings. Instead of winding magnet wire by hand around a toroid
+  core, this tool generates a flat FPC strip that rolls into a
+  cylinder and locks into shape, creating a precision solenoid "liner"
+  that sits inside standard powdered-iron RF cores (e.g., T-68, T-50).
+
+This component was created along the way to building the larger
+**NexRig** project (an Envelope Elimination and Restoration HF
+transceiver).
+
+## The Problem & Solution
+
+* **The Problem:** Hand-winding toroids is tedious, inconsistent, and
+    difficult to reproduce exactly across multiple units. High-current
+    windings require thick wire that is hard to manage.
+
+* **The Solution:** An FPC "insert" provides exact inductance,
+    consistent stray capacitance, and high current capacity (via wide
+    flat tracks) in a package that can be mass-manufactured.
+
+## Mechanical & Electrical Geometry
+
+The generator creates a 2-layer FPC strip with the following features:
+
+* **Form Factor:** A rectangular strip sized exactly to the **Inner
+    Circumference** of a specific magnetic core (e.g., T-68).
+
+* **Winding Topology:**
+
+* **Tracks:** Vertical parallel copper tracks run from top to bottom,
+    forming a solenoid coil when the strip is rolled into a tube.
+
+* **Turns:** The script auto-calculates the pitch and track width to
+    fit the requested number of turns () and Current () within the
+    core's ID.
+
+
+* **Locking Mechanism (The "Coffee Sleeve"):**
+
+* **Edge B (Top):** Features **Trapezoidal Tabs** extending outwards.
+
+* **Edge A (Bottom):** Features **Rectangular Slits** (slots) cut into
+    the PCB body.
+
+* **Assembly:** When rolled, the tabs slide into the slots to
+    mechanically lock the cylinder shape before insertion into the
+    core.
+
+
+* **Termination:**
+
+* **Castellated Pads:** The Start and End connections are essentially
+    plated half-holes (castellations) with a specific "U-shaped" edge
+    cut. This allows the coil to be soldered vertically onto a
+    motherboard or wired easily.
+
+
+# Discussion
+
+There are many cases, and perhaps they can be generalized. One
+(perhaps degenerate) case is that all windings fit on a single layer
+within the core's specified subtended angle, in which case all that is
+needed is the windings, and slits along the A edge and B edge to allow
+the assembler to wrap the FPC up from the ID of the toroid, over the
+plane of the toroid's flat side, and to the (wider due to larger
+radius) OD of the toroid where the soldering of edge B back to A is
+done and where tabs and through hole pads are provided for the start,
+end, and any specified taps are to receive soldered wiring. I think we
+have to generate a full project with PCB file rather than just a
+footprint to be able to specify all traces on all layers. The start,
+taps, and end throughhole pads need to connect ONLY to the end of the
+turn trace(s) they are associated with. Since multiple layers are used
+to handle greater current as specified by command line parameters, the
+multiple layers must connect to these pads' plated through barrels. If
+a design requires multiple layers in parallel we need a via farm near
+the B edge to carry current from each layer to a wider pad that must
+be soldered from bottom of B edge to top of A edge to continue the
+helix.
+
+
+The FPC actually _starts_ on the OD in the sense that the start of the
+coil is a through hole pad to which the start wire is soldered. This
+pad attaches to winding traces that go from where they are flat on the
+OD _down_ the flat face of the toroid toward the ID, wraps into the
+toroid through the ID, then back up on the flat of the opposite side
+to join with the pad on the OD again to continue the helix. Since we
+are going from ID to OD, the FPC that is on the OD has to be
+spreadable so it can fit on the larger (than the ID) radius part of
+the toroid at the OD. The assembler would take the FPC, roll it into a
+cylinder to go into the toroid ID, then flip the flat face covering
+parts of the FPC up and onto the OD where the solderable
+start,end,taps through hole pads are and where the B-back-to-A helix
+continuation solder joints are. One more thing: I want the throughhole
+pads to be on flaps that are NOT adhered to the OD, but instead stick
+out from the flat toroid face they come nearest and attach to wires.
+Putting them flat on the OD would make soldering hard.
+
+
+I believe what you're calling "cylinder section height" is the core's
+axial height. This is the distance between the two ID fold lines along
+a line parallel to the toroid's axis. ANd yes traces are continuous
+and B->A solder joint joins bottom layer trace N to top layer trace
+N+1. Are you also aware that multiple FPC layers are used to carry
+more current when required to fit? I think this might be only one
+reason for multiple layers. The user's turn count and current capacity
+are the two MUST HAVE requirements. We expand layer count to achieve
+these, but we do this reluctantly preferring to add more
+circumferential width (within the user's angle constraint) and
+widening traces to fill the space we have to help them carry more
+current as well. But we must make the trace-to-trace spacing
+manufacturable, and we have to limit the layer count to something we
+can build as well. (This also drives the via farm which gets huge as
+more layers are required.) So expanding trace width might be
+prioritized over adding more layers for current capacity if it's
+possible to do so and meet the required turns count.
+
+One more possible capability is to use layers to add more turns if one
+layer of turns or all layers used in parallel for one turn isn't
+enough to meet the turns requirement. Let's say we have need 60 turns,
+but only 20 will fit in one layer, and we need two layers in parallel
+for the current requirement. We could use two layers for each turn and
+three sets of these (totalling six) to make the turn count. So we need
+L1,L2 as one set of 200 turns, L3,L4 as the next set, and L5,L6 for
+the last set of 20 turns to make 60. I think it's electrically better
+to use adjacent layers for the parallel for current capacity (true?).
+so we would need to join L1,L2 end with L3,L4 start (staying parallel
+on two layers with enough pad capacity for the current) on the return
+from B edge to A, L3,L4 end with L5,L6 start, and L1,L2 and L5,L6 are
+connected to the start and end tabs for the entire coil. Everywhere we
+have connections with solder pads or move from layer to layer we have
+to have a via field to support the current requirement.
+
+When parallel for current sharing they should be stacked directly.
+When used for more turns they need to be offset to minimize
+turn-to-turn capacitance, so we need to make sure there's room to do
+so. This seems like it would reduce the overall turn count for a given
+layer to do this (the offset at one end takes space), but it's not a
+huge difference in width and we can reduce the turns we cram onto that
+layer or layer stack by one to make room for that offset. If this is
+done on yet another layer down for more turns, the offset can be back
+in the opposite direction if the capacitance doesn't suffer too much
+by doing this (L1 to L3 capacitance for example), but if this isn't
+possible we can reduce the turns on this new layer by one more to make
+room. Let's see how this would play out for various cases.
+
+Can we dispense with the use of "_" in symbols and use camelCase or
+CamelCase instead? I find "_" distracting, ugly, and hard to type.
+Also, let's indent by 2 for each indentation level not the normal
+Python 4. One thing I don't recall mentioning: The assembly would be
+greatly enhanced if we put tabs into slots to align and hold the B
+edge onto the A edge after wrapping around - perhaps one tab/slot per
+pie wedge added for difference between ID and OD. Assembly then
+consists of sticking the tabs into the slots on the other edge to hold
+things while a hot bar is used to melt the solder that was appplied to
+the bottom layer (A edge I guess), or else the solder was applied
+earlier as paste and preheated into a solder blob before assembly and
+allowed to cool and sticky flux is added to do the final installation
+in the core.
+
+If core name isn't found to match one of your table entries with the
+sloppy comparison I suggested above, display the table of core names
+and their dimensions as part of the error message help string.
+
+Instead of magical numbers like 1.8, use symbolic constants where the
+names help define what the number means and it purpose. For names like
+"mmPerAmp" spell it this way not "MmPerAmp".
+
+
+We have to have slices in the part that goes onto the OD for soldering
+B onto A because of diameter differences. Think of a winding on edge B
+wrapping around to lay on top of the next successive winding on edge
+A. We have to have a bottom layer solder pad on the B edge and a top
+layer solder pad on A edge so they can solder together to continue the
+helix. I think you're misunderstanding the A and B edge concept based
+on your ASCII diagram above. The A edge is the horizontal edge that is
+on the OD of the core that is where the start and end THT pads are.
+The B edge is at the end of each winding that starts on the A edge
+after having traversed down the front face (or rear face - we haven't
+really discussed which direction here) to the ID, the turn wraps into
+the ID and back up the opposite face toward the OD again to end at the
+B edge which is joined to the A edge by solder to complete the turn
+and connect to the start of the next turn in the helix.
+
+
+## The Software (`toroid-ease.py`)
+
+The tool is a CLI script using the **KiCad 9 Python API**.
+
+* **Inputs:**
+* `-c`: Core Type (e.g., `T-68`).
+* `-t`: Number of Turns (e.g., `54`).
+* `-a`: Target Current in Amps (e.g., `3.5`) — used to calculate track width.
+* `--angle`: Angular coverage (default 360°).
+
+
+* **Logic:**
+
+1. **Physics Check:** Calculates if the requested turns + required
+copper width fit inside the core.
+
+2. **Rejection:** If the design is physically impossible (tracks would
+overlap), it aborts and suggests a larger core or fewer turns.
+
+3. **Generation:** Draws the Board Outline, Copper Tracks, Tabs,
+Slits, and Castellation cuts using KiCad's geometric primitives
+(`PCB_SHAPE`, `SHAPE_T_SEGMENT`).
+
+
+* **Output:**
+* A `.kicad_pcb` board file. This format is used because the FPC is a standalone product to be manufactured, not just a footprint on another board.
+
+
+
+## Current Status (As of Dec 20, 2025)
+
+* **Functionality:** The script works for KiCad 9. It successfully
+    handles the tab/slot geometry, castellation cuts, and physics
+    validation.
+
+* **Known Constraints:**
+
+* **Gap:** Hardcoded safety gap of 0.15mm (6 mil) for FPC fabrication.
+
+* **Density:** It enforces a strict "No Overlap" rule.
+
+
+* **Immediate Next Step:** Validating the generated design in KiCad's
+    DRC to ensure the calculated gaps are truly manufacturable,
+    followed by implementing **Panelization** (placing multiple strips
+    on one manufacturing panel).
+
+## Example Usage
+
+```bash
+./toroid-ease.py -t 54 -c T-68 -a 3.5 -o t68-54t-3.5a.kicad_pcb
+
+```
+
+*(If the coil is too dense, the script will reject it and tell you the required Core ID size.)*
