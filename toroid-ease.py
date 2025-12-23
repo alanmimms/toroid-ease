@@ -350,187 +350,64 @@ def addText(board, pos, text, layer, height=1.0, thickness=0.15):
 
 def generateBoardOutline(board, cfg):
   """
-  Generate board outline with:
-  - Triangular wedge slits on front and rear flat faces (for spreading)
-  - Tab slots on A-edge (top)
-  - Trapezoidal tabs on B-edge (bottom)
-  - START flap at A-edge (connects to first trace on F_Cu)
-  - END flap at B-edge (connects to last trace on B_Cu)
+  Generate board outline with SHORT flap extensions.
+  START flap at first trace start, END flap at last trace end.
+  Board width extends to accommodate the last trace end position.
   """
   w = cfg["availableLength"]
   h = cfg["fpcHeight"]
   radial = cfg["radialThickness"]
-  axial = cfg["axialHeight"]
-  wedgeCount = cfg["wedgeCount"]
   pitch = cfg["pitch"]
   turnsPerLayer = cfg["turnsPerLayer"]
   traceAngle = cfg["traceAngle"]
   flapDiameter = cfg["flapDiameter"]
   offsets = cfg["offsets"]
-  totalLayers = cfg["totalLayers"]
+  traceWidth = cfg["traceWidth"]
+  seriesCount = cfg["seriesCount"]
+  parallelCount = cfg["parallelCount"]
 
   layer = pcbnew.Edge_Cuts
 
-  # Key Y positions
-  yAEdge = 0                    # A-edge (OD, top)
-  yFrontFold = radial           # Front face ends, ID starts
-  yRearFold = radial + axial    # ID ends, rear face starts
-  yBEdge = h                    # B-edge (OD, bottom)
-
-  # Layer offsets
-  fCuOffset = offsets[0]
-  bCuOffset = offsets[totalLayers - 1]
-
-  # Calculate flap positions
-  flapRadius = flapDiameter / 2
-  startFlapX = fCuOffset + pitch / 2  # First trace start position on F_Cu
-  # End flap at last turn's B-edge position (includes angle offset and layer offset)
+  # Calculate trace geometry
   marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
-  marginBottom = marginTop
-  traceLen = h - marginTop - marginBottom
+  traceLen = h - 2 * marginTop
   dx = traceLen * math.tan(traceAngle)
-  endFlapX = bCuOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx
 
-  # START flap Y position (extends above A-edge)
-  startFlapY = -flapRadius - 0.5
-  # END flap Y position (extends below B-edge)
-  endFlapY = h + flapRadius + 0.5
+  # SHORT flap dimensions
+  flapH = flapDiameter * 0.6
+  neckW = max(traceWidth, 2.5)
 
-  # Tab/slot positions (avoid START flap on A-edge, END flap on B-edge)
-  tabMarginLeft = flapDiameter + 2  # Margin for START flap
-  tabMarginRight = 2  # Small margin on right side
-  tabUsableWidth = w - tabMarginLeft - tabMarginRight
-  tabSpacing = tabUsableWidth / max(1, tabSlotCount)
+  # START at first trace position (series set 0)
+  startOffset = offsets[0]
+  startX = startOffset + pitch / 2
 
-  # Wedge slit positions on flat faces
-  wedgeWidth = w / wedgeCount
+  # END at last trace end position (last series set)
+  lastSetIdx = seriesCount - 1
+  endOffset = offsets[lastSetIdx * parallelCount]
+  endX = endOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx
 
-  # --- Build outline clockwise from top-left ---
-  pts = []
+  # Board width must accommodate the last trace end
+  boardW = max(w, endX + neckW / 2 + 0.5)
 
-  # A-EDGE (top, Y=0) with START flap and slots
-  pts.append((0, yAEdge))
+  # A-edge with START flap
+  addLine(board, vec(0, 0), vec(startX - neckW/2, 0), layer)
+  addLine(board, vec(startX - neckW/2, 0), vec(startX - neckW/2, -flapH), layer)
+  addLine(board, vec(startX - neckW/2, -flapH), vec(startX + neckW/2, -flapH), layer)
+  addLine(board, vec(startX + neckW/2, -flapH), vec(startX + neckW/2, 0), layer)
+  addLine(board, vec(startX + neckW/2, 0), vec(boardW, 0), layer)
 
-  # START flap neck and flap shape
-  startNeckLeft = startFlapX - flapNeckWidth / 2
-  startNeckRight = startFlapX + flapNeckWidth / 2
+  # Right edge
+  addLine(board, vec(boardW, 0), vec(boardW, h), layer)
 
-  pts.append((startNeckLeft, yAEdge))
-  pts.append((startNeckLeft, startFlapY + flapRadius))
-  pts.append((startFlapX - flapRadius, startFlapY))
-  pts.append((startFlapX, startFlapY - flapRadius))
-  pts.append((startFlapX + flapRadius, startFlapY))
-  pts.append((startNeckRight, startFlapY + flapRadius))
-  pts.append((startNeckRight, yAEdge))
+  # B-edge with END flap
+  addLine(board, vec(boardW, h), vec(endX + neckW/2, h), layer)
+  addLine(board, vec(endX + neckW/2, h), vec(endX + neckW/2, h + flapH), layer)
+  addLine(board, vec(endX + neckW/2, h + flapH), vec(endX - neckW/2, h + flapH), layer)
+  addLine(board, vec(endX - neckW/2, h + flapH), vec(endX - neckW/2, h), layer)
+  addLine(board, vec(endX - neckW/2, h), vec(0, h), layer)
 
-  # Continue along A-edge, adding slots
-  for i in range(tabSlotCount):
-    slotCenterX = tabMarginLeft + (i + 0.5) * tabSpacing
-    slotWidth = tabWidthTip + tabSlotClearance
-    slotLeft = slotCenterX - slotWidth / 2
-    slotRight = slotCenterX + slotWidth / 2
-    slotDepth = tabHeight + 0.3
-
-    # Skip if slot overlaps with START flap
-    if slotLeft < startNeckRight + 1:
-      continue
-
-    pts.append((slotLeft, yAEdge))
-    pts.append((slotLeft, yAEdge + slotDepth))
-    pts.append((slotRight, yAEdge + slotDepth))
-    pts.append((slotRight, yAEdge))
-
-  # To right edge
-  pts.append((w, yAEdge))
-
-  # RIGHT EDGE
-  pts.append((w, yBEdge))
-
-  # B-EDGE (bottom) with END flap and trapezoidal tabs
-  # First check if END flap is within board width
-  endNeckLeft = endFlapX - flapNeckWidth / 2
-  endNeckRight = endFlapX + flapNeckWidth / 2
-
-  # Find where END flap should be inserted among the tabs
-  # Go from right to left along B-edge
-  tabPositions = []
-  for i in range(tabSlotCount - 1, -1, -1):
-    tabCenterX = tabMarginLeft + (i + 0.5) * tabSpacing
-    # Skip tabs that overlap with END flap
-    if abs(tabCenterX - endFlapX) < tabWidthBase / 2 + flapNeckWidth / 2 + 1:
-      continue
-    tabPositions.append(tabCenterX)
-
-  # Sort tab positions from right to left for clockwise traversal
-  tabPositions.sort(reverse=True)
-
-  currentX = w
-  endFlapDrawn = False
-
-  for tabCenterX in tabPositions:
-    # Check if we should draw END flap before this tab
-    if not endFlapDrawn and tabCenterX < endFlapX and endNeckRight < w:
-      # Draw END flap
-      pts.append((endNeckRight, yBEdge))
-      pts.append((endNeckRight, endFlapY - flapRadius))
-      pts.append((endFlapX + flapRadius, endFlapY))
-      pts.append((endFlapX, endFlapY + flapRadius))
-      pts.append((endFlapX - flapRadius, endFlapY))
-      pts.append((endNeckLeft, endFlapY - flapRadius))
-      pts.append((endNeckLeft, yBEdge))
-      endFlapDrawn = True
-
-    # Draw this tab
-    baseLeft = tabCenterX - tabWidthBase / 2
-    baseRight = tabCenterX + tabWidthBase / 2
-    tipLeft = tabCenterX - tabWidthTip / 2
-    tipRight = tabCenterX + tabWidthTip / 2
-    tabBottom = yBEdge + tabHeight
-
-    pts.append((baseRight, yBEdge))
-    pts.append((tipRight, tabBottom))
-    pts.append((tipLeft, tabBottom))
-    pts.append((baseLeft, yBEdge))
-
-  # If END flap hasn't been drawn yet (it's to the left of all tabs), draw it now
-  if not endFlapDrawn and endNeckRight < w:
-    pts.append((endNeckRight, yBEdge))
-    pts.append((endNeckRight, endFlapY - flapRadius))
-    pts.append((endFlapX + flapRadius, endFlapY))
-    pts.append((endFlapX, endFlapY + flapRadius))
-    pts.append((endFlapX - flapRadius, endFlapY))
-    pts.append((endNeckLeft, endFlapY - flapRadius))
-    pts.append((endNeckLeft, yBEdge))
-
-  # To left edge
-  pts.append((0, yBEdge))
-
-  # LEFT EDGE
-  pts.append((0, yAEdge))
-
-  # Draw main outline
-  for i in range(len(pts) - 1):
-    addLine(board, vec(pts[i][0], pts[i][1]), vec(pts[i+1][0], pts[i+1][1]), layer)
-
-  # --- Triangular wedge slits on flat faces ---
-  # These are true slits: point at fold line, open at OD edge
-  # This allows the flat faces to spread when wrapped around toroid
-
-  slitWidthAtOd = 1.2  # Width at OD edge
-
-  for i in range(1, wedgeCount):
-    slitX = i * wedgeWidth
-
-    # Front face slit (from front fold to A-edge)
-    # Point at fold, open/wide at OD (A-edge)
-    # Draw two lines forming a V from fold to OD edge
-    addLine(board, vec(slitX, yFrontFold), vec(slitX - slitWidthAtOd/2, yAEdge), layer)
-    addLine(board, vec(slitX, yFrontFold), vec(slitX + slitWidthAtOd/2, yAEdge), layer)
-
-    # Rear face slit (from rear fold to B-edge)
-    # Point at fold, open/wide at OD (B-edge)
-    addLine(board, vec(slitX, yRearFold), vec(slitX - slitWidthAtOd/2, yBEdge), layer)
-    addLine(board, vec(slitX, yRearFold), vec(slitX + slitWidthAtOd/2, yBEdge), layer)
+  # Left edge
+  addLine(board, vec(0, h), vec(0, 0), layer)
 
 def generateFoldLines(board, cfg):
   """Dashed fold lines at ID edges."""
@@ -553,18 +430,31 @@ def generateFoldLines(board, cfg):
     x = endX + gapLen
 
 def generateTraces(board, cfg):
-  """Generate angled traces on all layers."""
+  """
+  Generate angled traces using full-turn weaving topology.
+
+  Full-turn weaving: Each complete turn stays on one layer pair, then alternates.
+  - Odd turns (1,3,5...): L1||L2 (F_Cu+In1_Cu) at integer positions
+  - Even turns (2,4,6...): L3||L4 (In2_Cu+B_Cu) at half-integer positions (offset)
+
+  Each trace is a half-turn (A→B). The B-to-A solder joint completes the turn.
+  Vias at A-edge connect between layer pairs for the next turn.
+
+  This keeps all current flowing the same direction around the toroid.
+  """
   w = cfg["availableLength"]
   h = cfg["fpcHeight"]
   radial = cfg["radialThickness"]
   totalLayers = cfg["totalLayers"]
+  parallelCount = cfg["parallelCount"]
+  seriesCount = cfg["seriesCount"]
   turnsPerLayer = cfg["turnsPerLayer"]
   pitch = cfg["pitch"]
   traceWidth = cfg["traceWidth"]
   traceAngle = cfg["traceAngle"]
   offsets = cfg["offsets"]
 
-  # Trace margins - stay clear of pads and slits
+  # Trace margins - stay clear of pads and via areas
   marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
   marginBottom = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
 
@@ -573,87 +463,87 @@ def generateTraces(board, cfg):
   traceLen = yEnd - yStart
   dx = traceLen * math.tan(traceAngle)
 
-  for layerIdx in range(totalLayers):
-    pcbLayer = pcbnew.F_Cu if layerIdx == 0 else pcbnew.B_Cu
-    if totalLayers > 2:
-      if layerIdx == 0:
-        pcbLayer = pcbnew.F_Cu
-      elif layerIdx == totalLayers - 1:
-        pcbLayer = pcbnew.B_Cu
-      else:
-        innerLayers = [pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.In3_Cu,
-                       pcbnew.In4_Cu, pcbnew.In5_Cu, pcbnew.In6_Cu]
-        pcbLayer = innerLayers[layerIdx - 1] if layerIdx - 1 < len(innerLayers) else pcbnew.B_Cu
+  # Map layer index to KiCad layer
+  def getKicadLayer(layerIdx):
+    if totalLayers <= 2:
+      return pcbnew.F_Cu if layerIdx == 0 else pcbnew.B_Cu
+    if layerIdx == 0:
+      return pcbnew.F_Cu
+    elif layerIdx == totalLayers - 1:
+      return pcbnew.B_Cu
+    else:
+      innerLayers = [pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.In3_Cu,
+                     pcbnew.In4_Cu, pcbnew.In5_Cu, pcbnew.In6_Cu]
+      return innerLayers[layerIdx - 1] if layerIdx - 1 < len(innerLayers) else pcbnew.B_Cu
 
-    offset = offsets[layerIdx]
+  # For full-turn weaving with series sets:
+  # Each series set gets traces at its offset position
+  for setIdx in range(seriesCount):
+    offset = offsets[setIdx * parallelCount]
+
+    # Layers in this parallel set
+    startLayerIdx = setIdx * parallelCount
+    endLayerIdx = startLayerIdx + parallelCount
 
     for turn in range(turnsPerLayer):
-      xStart = offset + turn * pitch + pitch / 2
-      xEnd = xStart + dx
+      xBase = offset + turn * pitch + pitch / 2
+      xEnd = xBase + dx
 
-      if xStart < 0 or xEnd > w:
+      if xBase < 0 or xEnd > w:
         continue
 
-      addTrack(board, vec(xStart, yStart), vec(xEnd, yEnd), pcbLayer, traceWidth)
+      # All layers in this parallel set get the same trace
+      for layerIdx in range(startLayerIdx, endLayerIdx):
+        pcbLayer = getKicadLayer(layerIdx)
+        addTrack(board, vec(xBase, yStart), vec(xEnd, yEnd), pcbLayer, traceWidth)
 
 def generateBtoAPads(board, cfg):
   """
   Generate B-to-A solder pads.
-  - A-edge pads on F_Cu (top layer) - receive connection from previous turn
-  - B-edge pads on B_Cu (bottom layer) - connect to next turn
-  Pads are staggered (alternating Y positions) to allow wider pads.
-  Pads align with trace endpoints on their respective layers.
+  CRITICAL: Bn.x MUST equal A(n+1).x for the helix to work when wrapped!
+  - A-pads on F_Cu at trace start positions
+  - B-pads on B_Cu at positions matching the NEXT turn's A-pad
+  - Skip B(turnsPerLayer-2) because END replaces it
   """
   h = cfg["fpcHeight"]
   radial = cfg["radialThickness"]
   turnsPerLayer = cfg["turnsPerLayer"]
   pitch = cfg["pitch"]
-  traceAngle = cfg["traceAngle"]
   btoAPadWidth = cfg["btoAPadWidth"]
   traceWidth = cfg["traceWidth"]
   offsets = cfg["offsets"]
-  totalLayers = cfg["totalLayers"]
 
   marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
-  marginBottom = marginTop
-  traceLen = h - marginTop - marginBottom
-  dx = traceLen * math.tan(traceAngle)
+  fCuOffset = offsets[0]
 
-  # Layer offsets for F_Cu (layer 0) and B_Cu (last layer)
-  fCuOffset = offsets[0]  # Always 0 for first series set
-  bCuOffset = offsets[totalLayers - 1]  # May be pitch/2 or more for later series sets
+  # Pad Y positions
+  aPadY = marginTop - btoAPadHeight / 2 - 0.1
+  bPadY = h - marginTop + btoAPadHeight / 2 + 0.1
 
-  # Base Y positions for pads
-  aPadYBase = padToEdgeGap + btoAPadHeight / 2
-  bPadYBase = h - padToEdgeGap - btoAPadHeight / 2
-
-  # Stagger amount for alternating pads
-  stagger = btoAPadHeight * 0.8
+  padW = max(btoAPadWidth, traceWidth)
+  padH = max(btoAPadHeight, 1.5)
 
   for turn in range(turnsPerLayer):
-    # Stagger: even turns closer to edge, odd turns further
-    yOffset = stagger if turn % 2 == 1 else 0
+    # A-pad positions: An at turn n start
+    # An.x = fCuOffset + n*pitch + pitch/2
+    if turn > 0:  # Skip A0, that's START
+      aX = fCuOffset + turn * pitch + pitch / 2
+      addSmdPad(board, vec(aX, aPadY), f"A{turn}", padW, padH, pcbnew.F_Cu)
 
-    # A-edge pad (receives connection from previous turn's B-pad)
-    # Aligns with F_Cu trace start position
-    # Skip turn 0 - that's START
-    if turn > 0:
-      aX = fCuOffset + turn * pitch + pitch / 2  # Trace start on F_Cu
-      aY = aPadYBase + yOffset
-      addSmdPad(board, vec(aX, aY), f"A{turn}", btoAPadWidth, btoAPadHeight, pcbnew.F_Cu)
-
-    # B-edge pad (connects to next turn's A-pad)
-    # Aligns with B_Cu trace end position
-    # Skip last turn - that's END
-    if turn < turnsPerLayer - 1:
-      bX = bCuOffset + turn * pitch + pitch / 2 + dx  # Trace end on B_Cu
-      bY = bPadYBase - yOffset
-      addSmdPad(board, vec(bX, bY), f"B{turn}", btoAPadWidth, btoAPadHeight, pcbnew.B_Cu)
+    # B-pad positions: Bn.x MUST equal A(n+1).x for alignment when wrapped
+    # Bn.x = A(n+1).x = fCuOffset + (n+1)*pitch + pitch/2
+    # Skip B(turnsPerLayer-2) = B8 because END replaces it
+    if turn < turnsPerLayer - 2:  # Skip last TWO: B8 (END) and B9 (doesn't exist)
+      bX = fCuOffset + (turn + 1) * pitch + pitch / 2  # Same X as A(turn+1)
+      addSmdPad(board, vec(bX, bPadY), f"B{turn}", padW, padH, pcbnew.B_Cu)
 
 def generateStartEndConnections(board, cfg):
   """
-  Connect START flap to first trace (top layer, A-edge).
-  Connect END flap to last trace (bottom layer, B-edge).
+  Connect START/END THT pads to their traces.
+
+  For full-turn weaving:
+  - START connects to first trace of first series set (L1||L2) at A-edge
+  - END connects to last trace of last series set at B-edge
   """
   h = cfg["fpcHeight"]
   radial = cfg["radialThickness"]
@@ -663,121 +553,170 @@ def generateStartEndConnections(board, cfg):
   traceAngle = cfg["traceAngle"]
   flapDiameter = cfg["flapDiameter"]
   offsets = cfg["offsets"]
-  totalLayers = cfg["totalLayers"]
+  seriesCount = cfg["seriesCount"]
+  parallelCount = cfg["parallelCount"]
 
   marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
-  marginBottom = marginTop
-  traceLen = h - marginTop - marginBottom
+  traceLen = h - 2 * marginTop
   dx = traceLen * math.tan(traceAngle)
+  flapH = flapDiameter * 0.6
 
-  flapRadius = flapDiameter / 2
-  startFlapY = -flapRadius - 0.5  # START flap above A-edge
-  endFlapY = h + flapRadius + 0.5  # END flap below B-edge
-
-  # Layer offsets
-  fCuOffset = offsets[0]
-  bCuOffset = offsets[totalLayers - 1]
-
-  # START connection: from first trace start to START pad (on F_Cu)
-  startX = fCuOffset + pitch / 2  # First trace on F_Cu
-  startTraceY = marginTop
-  addTrack(board, vec(startX, startTraceY), vec(startX, startFlapY + flapRadius + 0.5),
+  # START: first trace of series set 0 at A-edge
+  startOffset = offsets[0]
+  startX = startOffset + pitch / 2
+  startPadY = -flapH / 2
+  addTrack(board, vec(startX, marginTop), vec(startX, startPadY),
            pcbnew.F_Cu, traceWidth)
 
-  # END connection: from last trace end to END pad (on B_Cu)
-  endTraceX = bCuOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx  # Last trace on B_Cu
-  endTraceY = h - marginBottom
-  addTrack(board, vec(endTraceX, endTraceY), vec(endTraceX, endFlapY - flapRadius - 0.5),
+  # END: last trace of last series set at B-edge
+  # The last series set's offset
+  lastSetIdx = seriesCount - 1
+  endOffset = offsets[lastSetIdx * parallelCount]
+  # Last trace end X position
+  lastTraceEndX = endOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx
+  lastTraceEndY = h - marginTop
+
+  # END pad position - at the trace end X, extending below B-edge
+  endPadX = lastTraceEndX
+  endPadY = h + flapH / 2
+
+  # Simple vertical connection from trace end to pad
+  addTrack(board, vec(lastTraceEndX, lastTraceEndY), vec(endPadX, endPadY),
            pcbnew.B_Cu, traceWidth)
 
 def generateFlaps(board, cfg):
-  """Add THT pads for START (at A-edge) and END (at B-edge) flaps."""
+  """Add THT pads for START and END flaps."""
+  h = cfg["fpcHeight"]
+  radial = cfg["radialThickness"]
   pitch = cfg["pitch"]
   turnsPerLayer = cfg["turnsPerLayer"]
+  traceAngle = cfg["traceAngle"]
   flapDiameter = cfg["flapDiameter"]
   padSize = cfg["padSize"]
   padDrill = cfg["padDrill"]
-  traceAngle = cfg["traceAngle"]
-  h = cfg["fpcHeight"]
-  radial = cfg["radialThickness"]
   taps = cfg["taps"]
   offsets = cfg["offsets"]
-  totalLayers = cfg["totalLayers"]
-
-  flapRadius = flapDiameter / 2
-  startFlapY = -flapRadius - 0.5  # START flap above A-edge
-  endFlapY = h + flapRadius + 0.5  # END flap below B-edge
+  seriesCount = cfg["seriesCount"]
+  parallelCount = cfg["parallelCount"]
 
   marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
-  marginBottom = marginTop
-  traceLen = h - marginTop - marginBottom
+  traceLen = h - 2 * marginTop
   dx = traceLen * math.tan(traceAngle)
+  flapH = flapDiameter * 0.6
 
-  # Layer offsets
-  fCuOffset = offsets[0]
-  bCuOffset = offsets[totalLayers - 1]
+  # START pad - at first trace of series set 0
+  startOffset = offsets[0]
+  startX = startOffset + pitch / 2
+  startY = -flapH / 2
+  addThtPad(board, vec(startX, startY), "START", padSize, padDrill)
+  addText(board, vec(startX, startY + padSize/2 + 0.5), "S",
+          pcbnew.F_SilkS, textHeight * 0.4, textThickness)
 
-  # START pad (at A-edge, connects to F_Cu)
-  startX = fCuOffset + pitch / 2
-  addThtPad(board, vec(startX, startFlapY), "START", padSize, padDrill)
-  addText(board, vec(startX, startFlapY - flapRadius - 1), "START",
-          pcbnew.F_SilkS, textHeight * 0.7, textThickness)
+  # END pad - at last trace end of last series set
+  lastSetIdx = seriesCount - 1
+  endOffset = offsets[lastSetIdx * parallelCount]
+  endX = endOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx
+  endY = h + flapH / 2
+  addThtPad(board, vec(endX, endY), "END", padSize, padDrill)
+  addText(board, vec(endX, endY - padSize/2 - 0.5), "E",
+          pcbnew.B_SilkS, textHeight * 0.4, textThickness)
 
-  # END pad (at B-edge, connects to B_Cu)
-  endX = bCuOffset + (turnsPerLayer - 1) * pitch + pitch / 2 + dx
-  addThtPad(board, vec(endX, endFlapY), "END", padSize, padDrill)
-  addText(board, vec(endX, endFlapY + flapRadius + 1), "END",
-          pcbnew.B_SilkS, textHeight * 0.7, textThickness)
-
-  # TAP pads (if any) - these would need their own flap cutouts
-  # For now, add them along the A-edge
+  # TAP pads (if any)
   for tapTurn in taps:
     if tapTurn < 1 or tapTurn > turnsPerLayer:
       print(f"Warning: Tap {tapTurn} out of range")
       continue
-    tapX = fCuOffset + (tapTurn - 1) * pitch + pitch / 2
-    addThtPad(board, vec(tapX, startFlapY), f"T{tapTurn}", padSize, padDrill)
-    addText(board, vec(tapX, startFlapY - flapRadius - 1), f"T{tapTurn}",
-            pcbnew.F_SilkS, textHeight * 0.6, textThickness)
+    tapX = startOffset + (tapTurn - 1) * pitch + pitch / 2
+    addThtPad(board, vec(tapX, startY), f"T{tapTurn}", padSize, padDrill)
 
 def generateViaFarms(board, cfg):
-  """Via farms to connect parallel layers."""
-  if cfg["parallelCount"] <= 1:
+  """
+  Via farms for full-turn weaving topology.
+
+  Full-turn weaving current path:
+  - Turn N on L1||L2: A-pad → trace (A→B) → B-pad → *solder wraps* → A-pad
+  - Turn N+1 on L3||L4: A-pad → trace (A→B) → B-pad → *solder wraps* → A-pad
+  - Alternating between layer pairs
+
+  Via requirements:
+  1. A-edge (A-pads): Through-hole vias connect all layers - transfers current
+     from incoming solder joint (F_Cu) to the next turn's layer pair
+
+  2. B-edge (B-pads): Need to get signal to B_Cu for solder pad
+     - L1||L2 traces on F_Cu/In1_Cu need vias to B_Cu
+     - L3||L4 traces on In2_Cu/B_Cu already have B_Cu access
+
+  3. Parallel stitching: Within each layer pair, vias connect parallel layers
+  """
+  totalLayers = cfg["totalLayers"]
+  parallelCount = cfg["parallelCount"]
+  seriesCount = cfg["seriesCount"]
+
+  # Only need vias if we have multiple layers
+  if totalLayers < 2:
     return
 
-  pitch = cfg["pitch"]
+  h = cfg["fpcHeight"]
+  radial = cfg["radialThickness"]
   turnsPerLayer = cfg["turnsPerLayer"]
+  pitch = cfg["pitch"]
+  traceAngle = cfg["traceAngle"]
+  offsets = cfg["offsets"]
   viaDrill = cfg["viaDrill"]
   viaSize = cfg["viaSize"]
   viasNeeded = cfg["viasNeeded"]
-  h = cfg["fpcHeight"]
-  radial = cfg["radialThickness"]
 
+  # Via farm dimensions - sized for current capacity
+  viaCols = max(2, math.ceil(math.sqrt(viasNeeded)))
+  viaRows = math.ceil(viasNeeded / viaCols)
   viaSpacing = viaSize + 0.3
-  cols = math.ceil(math.sqrt(viasNeeded))
-  rows = math.ceil(viasNeeded / cols)
 
-  # Place via farms near A-edge for start and between series groups
-  viaY = radial * 0.5
+  marginTop = radial * 0.3 + padToEdgeGap + btoAPadHeight + 0.5
+  traceLen = h - 2 * marginTop
+  dx = traceLen * math.tan(traceAngle)
 
-  def addViaFarmAt(centerX, centerY):
-    startX = centerX - (cols - 1) * viaSpacing / 2
-    startY = centerY - (rows - 1) * viaSpacing / 2
-    count = 0
-    for row in range(rows):
-      for col in range(cols):
-        if count >= viasNeeded:
-          return
-        x = startX + col * viaSpacing
-        y = startY + row * viaSpacing
-        addVia(board, vec(x, y), viaDrill, viaSize, pcbnew.F_Cu, pcbnew.B_Cu)
-        count += 1
+  # For each series set, place via farms
+  for setIdx in range(seriesCount):
+    offset = offsets[setIdx * parallelCount]
 
-  # Via farm at start
-  addViaFarmAt(pitch / 2, viaY)
+    for turn in range(turnsPerLayer):
+      traceStartX = offset + turn * pitch + pitch / 2
+      traceEndX = traceStartX + dx
 
-  # Via farm at end
-  addViaFarmAt((turnsPerLayer - 0.5) * pitch, viaY)
+      # Via farm at A-edge - through-hole to connect all layers
+      # This allows current transfer between layer pairs
+      # Skip for first trace of first set (START handles it)
+      if not (setIdx == 0 and turn == 0):
+        viaFarmY = marginTop - 0.8
+        for row in range(viaRows):
+          for col in range(viaCols):
+            viaX = traceStartX - (viaCols - 1) * viaSpacing / 2 + col * viaSpacing
+            viaY = viaFarmY - row * viaSpacing
+
+            via = pcbnew.PCB_VIA(board)
+            via.SetPosition(vec(viaX, viaY))
+            via.SetDrill(toNm(viaDrill))
+            via.SetWidth(toNm(viaSize))
+            via.SetViaType(pcbnew.VIATYPE_THROUGH)
+            via.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+            board.Add(via)
+
+      # Via farm at B-edge - connects trace layers to B_Cu for solder pad
+      # Skip for last trace of last set (END handles it)
+      if not (setIdx == seriesCount - 1 and turn == turnsPerLayer - 1):
+        viaFarmY = h - marginTop + 0.8
+        for row in range(viaRows):
+          for col in range(viaCols):
+            viaX = traceEndX - (viaCols - 1) * viaSpacing / 2 + col * viaSpacing
+            viaY = viaFarmY + row * viaSpacing
+
+            via = pcbnew.PCB_VIA(board)
+            via.SetPosition(vec(viaX, viaY))
+            via.SetDrill(toNm(viaDrill))
+            via.SetWidth(toNm(viaSize))
+            via.SetViaType(pcbnew.VIATYPE_THROUGH)
+            via.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+            board.Add(via)
 
 def generateCourtyard(board, cfg):
   w = cfg["availableLength"]
@@ -853,7 +792,7 @@ def createBoard(args):
   generateStartEndConnections(board, cfg)
   generateFlaps(board, cfg)
   generateViaFarms(board, cfg)
-  generateCourtyard(board, cfg)
+  # No courtyard - this is a standalone FPC, not a component
 
   if os.path.exists(outFile):
     os.remove(outFile)

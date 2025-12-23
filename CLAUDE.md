@@ -61,3 +61,32 @@ T68, T50, T37, T200 (with aliases: T-68, FT68, FT-68, etc.)
 - 2-space indentation
 - camelCase for variables and functions (e.g., `minGapMm`, `toNm`)
 - Symbolic constants for magic numbers
+
+## Current Implementation Status (Dec 2025)
+
+### Full-Turn Weaving Topology
+The tool now implements **full-turn weaving** for multi-layer designs:
+- Each complete turn stays on one layer pair (L1||L2 or L3||L4)
+- After completing a turn, vias at A-edge transfer current to the other layer pair
+- This keeps all current flowing the same direction around the toroid
+
+Current path: START → L1||L2 trace (A→B) → B-pad wraps/solders to A-pad → vias → L3||L4 trace (A→B) → B-pad wraps/solders → vias → L1||L2 → ... → END
+
+### Key Design Decisions
+1. **B-pads on B_Cu**: Physical bottom layer, faces outward when wrapped, solders to F_Cu A-pads
+2. **A-pads on F_Cu**: Physical top layer, receives solder joint from wrapped B-edge
+3. **Through-hole vias**: At A-edge pads to transfer between layer pairs for alternating turns
+4. **Half-pitch offset**: Series set 1 traces offset by pitch/2 from series set 0
+
+### Rendering for Debugging
+Use kicad-cli to export PDF for visual inspection:
+```bash
+kicad-cli pcb export pdf test_output.kicad_pcb -o test_output.pdf \
+  --layers "F.Cu,In1.Cu,In2.Cu,B.Cu,Edge.Cuts,F.Silkscreen,B.Silkscreen" --mode-single
+```
+
+### Known Issues / TODO
+- B-to-A pad alignment may need refinement for proper helix continuity
+- Via placement at B-edge for L1||L2 traces needs anti-pads on In2_Cu (currently using through-hole which may short)
+- Tabs/slots for mechanical locking not yet re-enabled (simplified for debugging)
+- Spreading slits at fold lines not yet implemented
