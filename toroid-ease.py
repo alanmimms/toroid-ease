@@ -350,13 +350,19 @@ def calculateConfiguration(coreOd, coreId, axialHeight, turns, amps,
                axialHeight +
                4 * bendAllowance)
 
-  # Width = ID circumference (all turns laid out) + margins for edge clearance
-  # Left margin ensures first trace is at least 0.5mm + traceWidth/2 from edge
-  # Right margin also needed due to helix offset (last trace extends beyond ID circumference)
+  # Width = span of all traces + edge clearance on each side
+  # The parallelogram has the same width at A-edge and B-edge (it's a true parallelogram)
+  # For N turns: A0 to BN-1 spans N pitches (A0 at 0.5*pitch, BN-1 at (N+0.5)*pitch - but helix offset shifts B-edge)
+  # At A-edge: traces span from A0 (0.5*pitch) to A(N-1) ((N-0.5)*pitch) = (N-1) pitches
+  # At B-edge: traces span from B0 (1.5*pitch) to B(N-1) ((N+0.5)*pitch) = (N-1) pitches
+  # Board width at A-edge: from (A0 - half_trace - clearance) to (A(N-1) + half_trace + clearance)
+  # But we now have turn N-1's trace going to B(N-1), so we need room for B(N-1) as well
+  # Width at A-edge: from 0 to B(N-1)'s A-edge projection + half_trace + clearance
+  # Actually simpler: N turns = N traces, each trace spans 1 pitch, so total span = N pitches
   traceHalfWidth = traceWidth / 2.0
   leftMargin = EDGE_TO_COPPER_MM + traceHalfWidth  # edge_clearance + half_trace_width
-  rightMargin = EDGE_TO_COPPER_MM + traceHalfWidth + pitch  # edge_clearance + half_trace + helix offset
-  fpcWidth = idCircumference + leftMargin + rightMargin
+  # Width needs to accommodate: A0 to B(N-1) which spans N pitches (from 0.5 to N+0.5)
+  fpcWidth = turns * pitch + traceWidth + 2 * EDGE_TO_COPPER_MM
 
   # Fold line positions (Y coordinates on unfolded FPC)
   # There are 4 fold lines for wrapping around the toroid:
@@ -696,8 +702,8 @@ def generateEdgeCuts(board, cfg):
   leftMargin = cfg.get("leftMargin", 0)
   traceAngleDeg = cfg.get("traceAngleDeg", 0)
 
-  # Flap dimensions
-  flapLength = 10.0
+  # Flap dimensions - just enough for pad + small margin
+  flapLength = 5.0
   maxPadWidth = pitch - gap
   padWidth = min(maxPadWidth, max(SMD_PAD_WIDTH_MM, traceWidth))
   # Flap width must be wider than trace to provide edge clearance
@@ -710,8 +716,10 @@ def generateEdgeCuts(board, cfg):
   helixOffset = pitch
   cfg["helixOffset"] = helixOffset
 
-  # Board width at A-edge (top)
-  boardWidth = leftMargin + (turns - 0.5) * pitch + flapWidth/2 + 1.0
+  # Board width at A-edge (top) - minimal, just enough for traces with edge clearance
+  # Last trace A-edge center is at leftMargin + (turns - 0.5) * pitch
+  # Right edge needs traceWidth/2 + edge clearance beyond that
+  boardWidth = leftMargin + (turns - 0.5) * pitch + traceWidth/2 + EDGE_TO_COPPER_MM
   cfg["boardWidth"] = boardWidth
 
   # Calculate petal boundary X position at any Y (follows trace angle)
@@ -782,22 +790,25 @@ def generateEdgeCuts(board, cfg):
     slot1_leftVpoint = vPointX_1 - halfSlotWidth
     slot1_rightVpoint = vPointX_1 + halfSlotWidth
 
-    # START flap covers full A0 petal: from x=0 to boundary 1 slot left edge
-    startFlapLeftX = 0
+    # START flap: trace aligned with turn 0's A-edge position, flap provides edge clearance
+    # Turn 0's A-edge is at leftMargin + 0.5*pitch
+    turn0_X = leftMargin + 0.5 * pitch
+    startFlapLeftX = turn0_X - traceWidth/2 - EDGE_TO_COPPER_MM  # Just enough for edge clearance
     startFlapRightX = slot1_leftEdge  # Flap right edge meets slot left edge
     startFlapWidth = startFlapRightX - startFlapLeftX
     cfg["startFlapLeftX"] = startFlapLeftX
     cfg["startFlapRightX"] = startFlapRightX
     cfg["startFlapWidth"] = startFlapWidth
-    cfg["startFlapCenterX"] = (startFlapLeftX + startFlapRightX) / 2
+    cfg["startFlapCenterX"] = turn0_X  # Trace at turn 0's actual position
 
-    # Left edge (diagonal for parallelogram)
-    addLine(board, vec(helixOffset, fpcHeight), vec(0, 0), layer, width)
+    # Left edge (diagonal for parallelogram) - starts at startFlapLeftX, not 0
+    leftEdgeBottomX = startFlapLeftX + helixOffset  # B-edge left corner
+    addLine(board, vec(leftEdgeBottomX, fpcHeight), vec(startFlapLeftX, 0), layer, width)
 
     # A-edge with integrated petal cutouts (V-shaped sawtooth pattern)
-    # START flap extends from (0,0) to (slot1_leftEdge, 0), with flap extending downward
-    addLine(board, vec(0, 0), vec(0, -flapLength), layer, width)  # Left edge of flap
-    addLine(board, vec(0, -flapLength), vec(startFlapRightX, -flapLength), layer, width)  # Bottom of flap
+    # START flap extends from startFlapLeftX to slot1_leftEdge, with flap extending downward
+    addLine(board, vec(startFlapLeftX, 0), vec(startFlapLeftX, -flapLength), layer, width)  # Left edge of flap
+    addLine(board, vec(startFlapLeftX, -flapLength), vec(startFlapRightX, -flapLength), layer, width)  # Bottom of flap
     addLine(board, vec(startFlapRightX, -flapLength), vec(slot1_leftEdge, 0), layer, width)  # Right edge to A-edge
 
     # Boundary 1 slot V-shape (between START/A0 and A1)
@@ -837,46 +848,58 @@ def generateEdgeCuts(board, cfg):
       addLine(board, vec(rightVpointX, vPointY), vec(rightEdgeX, 0), layer, width)
       currentX = rightEdgeX
 
-    # Finish A-edge to right corner
-    addLine(board, vec(currentX, 0), vec(boardWidth, 0), layer, width)
+    # Pre-calculate last boundary slot position on A-edge (between A50 and END/A51)
+    vPointX_lastA = boundaryX(turns - 1, foldLine1Y)
+    deltaY_lastA = foldLine1Y
+    deltaX_lastA = deltaY_lastA * traceSlope
+    centerAtEdge_lastA = vPointX_lastA - deltaX_lastA  # Last boundary at A-edge
+    slotLastA_leftEdge = centerAtEdge_lastA - halfSlotWidth
+    slotLastA_rightEdge = centerAtEdge_lastA + halfSlotWidth
+    slotLastA_leftVpoint = vPointX_lastA - halfSlotWidth
+    slotLastA_rightVpoint = vPointX_lastA + halfSlotWidth
 
-    # Right edge (diagonal for parallelogram)
-    addLine(board, vec(boardWidth, 0), vec(boardWidth + helixOffset, fpcHeight), layer, width)
+    # END flap on A-edge: trace aligned with turn 51's A-edge position
+    # Turn 51's A-edge is at leftMargin + (turns - 1 + 0.5) * pitch = leftMargin + (turns - 0.5) * pitch
+    # But turn 51's B-edge (B51) is one pitch further right
+    turn51_A_X = leftMargin + (turns - 0.5) * pitch
+    turn51_B_X = leftMargin + (turns + 0.5) * pitch  # B51 position
 
-    # B-edge with integrated petal cutouts (V-shaped sawtooth pattern)
-    # Pre-calculate last boundary slot position (between B50 and END/B51)
-    # END flap will extend from this slot to board right edge
-    vPointX_last = boundaryX(turns - 1, foldLine2Y)
-    deltaY_last = fpcHeight - foldLine2Y
-    deltaX_last = deltaY_last * traceSlope
-    centerAtEdge_last = vPointX_last + deltaX_last  # Last boundary at B-edge
-    slotLast_rightEdge = centerAtEdge_last + halfSlotWidth
-    slotLast_leftEdge = centerAtEdge_last - halfSlotWidth
-    slotLast_leftVpoint = vPointX_last - halfSlotWidth
-    slotLast_rightVpoint = vPointX_last + halfSlotWidth
-
-    # END flap covers full B51 petal: from last boundary slot right edge to board right edge
-    endFlapLeftX = slotLast_rightEdge  # Flap left edge meets slot right edge
-    endFlapRightX = boardWidth + helixOffset
+    endFlapLeftX = slotLastA_rightEdge  # Flap left edge meets slot right edge
+    endFlapRightX = turn51_A_X + traceWidth/2 + EDGE_TO_COPPER_MM  # END flap right edge
     endFlapWidth = endFlapRightX - endFlapLeftX
     cfg["endFlapLeftX"] = endFlapLeftX
     cfg["endFlapRightX"] = endFlapRightX
     cfg["endFlapWidth"] = endFlapWidth
-    cfg["endFlapCenterX"] = (endFlapLeftX + endFlapRightX) / 2
-    currentX = boardWidth + helixOffset
+    cfg["endFlapCenterX"] = turn51_A_X  # Trace at turn 51's actual A-edge position
 
-    # Draw from board right corner to END flap right edge (same point), then flap outline
-    addLine(board, vec(endFlapRightX, fpcHeight), vec(endFlapRightX, fpcHeight + flapLength), layer, width)  # Right edge of flap
-    addLine(board, vec(endFlapRightX, fpcHeight + flapLength), vec(endFlapLeftX, fpcHeight + flapLength), layer, width)  # Bottom of flap
-    addLine(board, vec(endFlapLeftX, fpcHeight + flapLength), vec(slotLast_rightEdge, fpcHeight), layer, width)  # Left edge back to B-edge
+    # Board right edge extends to B51 (turn 51's B-edge), not just END flap
+    boardRightEdgeX = turn51_B_X + traceWidth/2 + EDGE_TO_COPPER_MM
 
-    # Last boundary slot V-shape (between B50 and END/B51)
-    addLine(board, vec(slotLast_rightEdge, fpcHeight), vec(slotLast_rightVpoint, foldLine2Y), layer, width)
-    addLine(board, vec(slotLast_rightVpoint, foldLine2Y), vec(slotLast_leftVpoint, foldLine2Y), layer, width)
-    addLine(board, vec(slotLast_leftVpoint, foldLine2Y), vec(slotLast_leftEdge, fpcHeight), layer, width)
-    currentX = slotLast_leftEdge
+    # Slot at last A-edge boundary (between A50 and END/A51)
+    addLine(board, vec(currentX, 0), vec(slotLastA_leftEdge, 0), layer, width)
+    addLine(board, vec(slotLastA_leftEdge, 0), vec(slotLastA_leftVpoint, foldLine1Y), layer, width)
+    addLine(board, vec(slotLastA_leftVpoint, foldLine1Y), vec(slotLastA_rightVpoint, foldLine1Y), layer, width)
+    addLine(board, vec(slotLastA_rightVpoint, foldLine1Y), vec(slotLastA_rightEdge, 0), layer, width)
 
-    for i in range(turns - 3, 0, -1):
+    # END flap on A-edge (extends upward like START) - open shape, not closed loop
+    addLine(board, vec(slotLastA_rightEdge, 0), vec(slotLastA_rightEdge, -flapLength), layer, width)  # Left edge up
+    addLine(board, vec(slotLastA_rightEdge, -flapLength), vec(endFlapRightX, -flapLength), layer, width)  # Top of flap
+    addLine(board, vec(endFlapRightX, -flapLength), vec(endFlapRightX, 0), layer, width)  # Right edge down
+
+    # A-edge continues from END flap to board right edge (for turn 51 trace area)
+    addLine(board, vec(endFlapRightX, 0), vec(boardRightEdgeX, 0), layer, width)
+
+    # Right edge - diagonal like left edge (parallelogram shape)
+    # Goes from A-edge to B-edge with helix offset
+    rightEdgeTopX = boardRightEdgeX
+    rightEdgeBottomX = boardRightEdgeX + helixOffset
+    addLine(board, vec(rightEdgeTopX, 0), vec(rightEdgeBottomX, fpcHeight), layer, width)
+
+    # B-edge with boundary slots including B51
+    currentX = rightEdgeBottomX
+
+    # B-edge slots from turns-1 down to 1 (include boundary 51 for B50/B51)
+    for i in range(turns - 1, 0, -1):
       # Boundary between petals at fold line
       vPointX = boundaryX(i, foldLine2Y)
       vPointY = foldLine2Y
@@ -907,8 +930,8 @@ def generateEdgeCuts(board, cfg):
       addLine(board, vec(leftVpointX, vPointY), vec(leftEdgeX, fpcHeight), layer, width)
       currentX = leftEdgeX
 
-    # Finish B-edge to left corner
-    addLine(board, vec(currentX, fpcHeight), vec(helixOffset, fpcHeight), layer, width)
+    # Finish B-edge to left corner (must match the left edge starting point)
+    addLine(board, vec(currentX, fpcHeight), vec(leftEdgeBottomX, fpcHeight), layer, width)
 
 def generatePetalSlitWithArc(board, arcCenterX, arcCenterY, edgeY, arcRadius, traceSlope, layer, width, openUpward=True):
   """
@@ -1310,6 +1333,10 @@ def generateWindingTraces(board, cfg):
   turns = cfg["turns"]
   layers = cfg["layers"]
 
+  # Generate all traces (turns 0 to N-1)
+  # START replaces A0 pad but turn 0 trace still exists (A0->B0)
+  # END replaces A51 pad but turn 51 trace still exists (A51->B51)
+  # This makes START and END identical in structure
   for turnIdx in range(turns):
     # Generate trace on F.Cu
     generateSingleTrace(board, cfg, turnIdx, pcbnew.F_Cu)
@@ -1348,11 +1375,8 @@ def generateSingleTrace(board, cfg, turnIdx, layer):
   aEdgeX = leftMargin + (turnIdx + 0.5) * pitch
 
   # B-edge position (where this trace ends) - SHIFTED BY ONE PITCH for helix!
+  # Last trace (turn 51) B-edge at leftMargin + 52.5*pitch, but END flap handles it
   bEdgeX = leftMargin + (turnIdx + 1.5) * pitch
-
-  # If B-edge would be past the FPC width, wrap or clip
-  if bEdgeX > cfg["fpcWidth"]:
-    bEdgeX = cfg["fpcWidth"] - pitch / 2.0
 
   # Y coordinates - MUST match pad center positions exactly for DRC connection
   # Pad centers are at: padHeight/2 + EDGE_TO_COPPER_MM from edges
@@ -1398,10 +1422,7 @@ def generateTraceVias(board, cfg, turnIdx):
   if viasNeeded == 0:
     return
 
-  # Skip vias on last turn to avoid hole_to_hole with adjacent trace
   turns = cfg["turns"]
-  if turnIdx >= turns - 1:
-    return
 
   pitch = cfg["pitch"]
   fpcHeight = cfg["fpcHeight"]
@@ -1414,8 +1435,6 @@ def generateTraceVias(board, cfg, turnIdx):
   # Trace endpoints (same calculation as generateSingleTrace)
   aEdgeX = leftMargin + (turnIdx + 0.5) * pitch
   bEdgeX = leftMargin + (turnIdx + 1.5) * pitch
-  if bEdgeX > cfg["fpcWidth"]:
-    bEdgeX = cfg["fpcWidth"] - pitch / 2.0
 
   # Y coordinates for trace endpoints (pad centers)
   aEdgeY = EDGE_TO_COPPER_MM + padOverlapSize / 2.0
@@ -1513,9 +1532,8 @@ def generateLapPads(board, cfg):
     aPadX = leftMargin + (turnIdx + 0.5) * pitch
 
     # B-pad position (trace end, shifted by one pitch for helix)
+    # B50 is at leftMargin + 51.5 * pitch, same as END flap center (turn 51's A-edge)
     bPadX = leftMargin + (turnIdx + 1.5) * pitch
-    if bPadX > cfg["fpcWidth"]:
-      bPadX = cfg["fpcWidth"] - pitch / 2.0
 
     # For rolling mount:
     # - Turn 0: START flap connects, so skip A-pad
@@ -1523,15 +1541,16 @@ def generateLapPads(board, cfg):
     # For flat mount:
     # - Similar logic
 
-    # A-pads: skip first turn (START flap handles it)
+    # A-pads: skip first turn (START flap handles A0) and last turn (END flap handles A51)
+    # This mirrors how START/END work identically - both replace an A-pad
     # Place on BOTH layers so traces on both layers connect
-    if turnIdx > 0:
+    if turnIdx > 0 and turnIdx < turns - 1:
       addSmdPad(board, vec(aPadX, aPadY), f"A{turnIdx}", padWidth, padHeight,
                 pcbnew.F_Cu, angleDeg=padAngle)
       addSmdPad(board, vec(aPadX, aPadY), f"A{turnIdx}b", padWidth, padHeight,
                 pcbnew.B_Cu, angleDeg=padAngle)
 
-    # B-pads: skip last turn (END flap handles it)
+    # B-pads: skip last turn (no B51 - board doesn't extend that far)
     # Place on BOTH layers so traces on both layers connect
     if turnIdx < turns - 1:
       addSmdPad(board, vec(bPadX, bPadY), f"B{turnIdx}", padWidth, padHeight,
@@ -1559,26 +1578,12 @@ def generateFlapPads(board, cfg):
   padWidth = min(maxPadWidth, max(SMD_PAD_WIDTH_MM, traceWidth))
   padHeight = SMD_PAD_HEIGHT_MM
 
-  # Flap length
-  flapLength = 10.0
+  # Flap length - must match edge cuts generation
+  flapLength = 5.0
 
   # Trace endpoint Y positions - must match generateSingleTrace and generateLapPads
   traceAY = padHeight / 2.0 + EDGE_TO_COPPER_MM
   traceBY = fpcHeight - padHeight / 2.0 - EDGE_TO_COPPER_MM
-
-  def addFlapVias(flapX, viaStartY, viaEndY):
-    """Add vias along the flap trace to join F.Cu and B.Cu."""
-    if layers < 2 or viasNeeded == 0:
-      return
-    # Place vias evenly along the flap trace
-    viaCount = max(2, viasNeeded // 2)  # At least 2 vias per flap
-    viaSpan = abs(viaEndY - viaStartY) - 1.0  # Leave margin at ends
-    if viaSpan < DEFAULT_VIA_SIZE_MM * viaCount:
-      viaCount = max(1, int(viaSpan / DEFAULT_VIA_SIZE_MM))
-    for i in range(viaCount):
-      frac = (i + 0.5) / viaCount
-      viaY = viaStartY + (viaEndY - viaStartY) * frac
-      addVia(board, vec(flapX, viaY), DEFAULT_VIA_DRILL_MM, DEFAULT_VIA_SIZE_MM)
 
   if mount == "rolling":
     # START flap covers full A0 petal - use center calculated in generateMainOutline
@@ -1596,25 +1601,22 @@ def generateFlapPads(board, cfg):
     if layers == 2:
       addTrack(board, vec(startFlapX, startPadY + padHeight/2),
                vec(startFlapX, traceAY), pcbnew.B_Cu, traceWidth)
-      # Add vias along the START flap trace
-      addFlapVias(startFlapX, startPadY + padHeight/2 + 0.5, -0.5)
 
-    # END flap covers full B51 petal - use center calculated in generateMainOutline
-    endFlapX = cfg.get("endFlapCenterX", leftMargin + (turns - 0.5) * pitch + pitch)
-    endPadY = fpcHeight + flapLength / 2.0
+    # END flap on A-edge (like START) - use center calculated in generateMainOutline
+    # END is at turn 51's A-edge position, replacing the A51 lap pad
+    endFlapX = cfg.get("endFlapCenterX", leftMargin + (turns - 0.5) * pitch)
+    endPadY = -flapLength / 2.0  # Same as START - flap extends upward
 
     addSmdPad(board, vec(endFlapX, endPadY), "END", padWidth, padHeight, pcbnew.F_Cu)
     if layers == 2:
       addSmdPad(board, vec(endFlapX, endPadY), "ENDb", padWidth, padHeight, pcbnew.B_Cu)
 
-    # Connect END pad to last trace at B-edge
-    addTrack(board, vec(endFlapX, traceBY),
-             vec(endFlapX, endPadY - padHeight/2), pcbnew.F_Cu, traceWidth)
+    # Connect END pad to last trace at A-edge (turn 51's A-edge position)
+    addTrack(board, vec(endFlapX, endPadY + padHeight/2),
+             vec(endFlapX, traceAY), pcbnew.F_Cu, traceWidth)
     if layers == 2:
-      addTrack(board, vec(endFlapX, traceBY),
-               vec(endFlapX, endPadY - padHeight/2), pcbnew.B_Cu, traceWidth)
-      # Add vias along the END flap trace
-      addFlapVias(endFlapX, fpcHeight + 0.5, endPadY - padHeight/2 - 0.5)
+      addTrack(board, vec(endFlapX, endPadY + padHeight/2),
+               vec(endFlapX, traceAY), pcbnew.B_Cu, traceWidth)
 
   else:  # flat mount
     # START flap extends from A-edge at first trace position
@@ -1631,8 +1633,6 @@ def generateFlapPads(board, cfg):
     if layers == 2:
       addTrack(board, vec(startFlapX, startPadY + padHeight/2),
                vec(startFlapX, traceAY), pcbnew.B_Cu, traceWidth)
-      # Add vias along the START flap trace
-      addFlapVias(startFlapX, startPadY + padHeight/2 + 0.5, 0 - 0.5)
 
     # END flap at the END of the last trace (its B-edge position)
     # For flat mount, END flap extends from B-edge (bottom, Y=fpcHeight) downward
@@ -1652,8 +1652,6 @@ def generateFlapPads(board, cfg):
     if layers == 2:
       addTrack(board, vec(lastTraceEndX, traceBY),
                vec(lastTraceEndX, endPadY - padHeight/2), pcbnew.B_Cu, traceWidth)
-      # Add vias along the END flap trace
-      addFlapVias(lastTraceEndX, fpcHeight + 0.5, endPadY - padHeight/2 - 0.5)
 
 # =============================================================================
 # Stiffener Generation
@@ -1672,7 +1670,7 @@ def generateStiffener(board, cfg):
   fpcHeight = cfg["fpcHeight"]
   mount = cfg["mount"]
   margin = STIFFENER_MARGIN_MM
-  flapLength = 10.0
+  flapLength = 5.0  # Must match edge cuts generation
 
   # Use flap dimensions calculated in generateMainOutline
   # These are set in cfg when the edge cuts are generated
@@ -1694,12 +1692,12 @@ def generateStiffener(board, cfg):
     addLine(board, vec(x2, y2), vec(x1, y2), layer, lineWidth)
     addLine(board, vec(x1, y2), vec(x1, y1), layer, lineWidth)
 
-    # END stiffener at B-edge flap (extending downward from Y=fpcHeight)
-    # Stiffener width matches full B51 petal width
+    # END stiffener at A-edge flap (extending upward from Y=0, like START)
+    # Stiffener width matches full A51 petal width
     x1 = endFlapLeftX
     x2 = endFlapRightX
-    y1 = fpcHeight  # Starts at B-edge
-    y2 = fpcHeight + flapLength + margin  # Extends past flap end
+    y1 = 0  # Starts at A-edge
+    y2 = -flapLength - margin  # Extends past flap end (upward)
 
     addLine(board, vec(x1, y1), vec(x2, y1), layer, lineWidth)
     addLine(board, vec(x2, y1), vec(x2, y2), layer, lineWidth)
@@ -1732,7 +1730,8 @@ def generateStiffener(board, cfg):
     addLine(board, vec(x1, y2), vec(x1, y1), layer, lineWidth)
 
   # Label the stiffener layer
-  labelY = fpcHeight + flapLength + margin + 2.0 if mount == "rolling" else fpcHeight + flapLength + margin + 2.0
+  # For rolling mount, both stiffeners are at A-edge (top), so put label at top
+  labelY = -flapLength - margin - 2.0 if mount == "rolling" else fpcHeight + flapLength + margin + 2.0
   addText(board, vec(cfg["fpcWidth"]/2, labelY), "STIFFENER OUTLINE",
           layer, 1.5, 0.15)
 
