@@ -14,79 +14,148 @@ Requires KiCad 9's Python environment (for `pcbnew` module):
 ./toroid-ease.py -c <core> -t <turns> -a <amps> -o <output.kicad_pcb>
 
 # Examples
-./toroid-ease.py -c T68 -t 20 -a 1.0 -o my_coil.kicad_pcb
-./toroid-ease.py -c FT-50 -t 30 -a 2.0 --maxLayers 4 -o high_current.kicad_pcb
-./toroid-ease.py -c T200 -t 60 -a 0.5 --taps 20,40 -o tapped_coil.kicad_pcb
+./toroid-ease.py -c T68 -t 20 -a 0.5 -o my_coil.kicad_pcb
+./toroid-ease.py -c T200 -t 52 -a 1.0 --layers 2 -o high_current.kicad_pcb
+./toroid-ease.py -c FT-50 -t 30 -a 0.5 --mount flat -o flat_mount.kicad_pcb
 ```
 
 ## CLI Parameters
 
-- `-c, --core`: Core type (T68, T-68, FT68, FT-68 all accepted)
+Required:
+- `-c, --core`: Core type (T68, T-68, FT68, FT-68 all accepted, case-insensitive)
 - `-t, --turns`: Number of turns required
+- `-o, --output`: Output filename (.kicad_pcb)
+
+Optional:
 - `-a, --amps`: Current capacity in amps (default: 0.5)
-- `-l, --maxLayers`: Maximum layer count (default: 6)
-- `--angle`: Angular coverage in degrees (default: 360)
-- `--taps`: Comma-separated turn numbers for tap flaps
-- `--viaDrill`, `--viaSize`, `--padDrill`: Via and pad dimensions
+- `--layers`: FPC layer count, 1 or 2 (default: 2, parallel for current)
+- `--copper`: Copper thickness - 0.5oz, 18u, 1oz, 35u, 2oz, 70u (default: 1oz)
+- `--fpcThickness`: FPC base thickness in mm (default: 0.22)
+- `--bendRadius`: Override calculated bend radius in mm
+- `--slitEndDiameter`: Rip-stop semicircle diameter in mm (default: 0.8)
+- `--mount`: Mounting orientation - rolling or flat (default: rolling)
 
 ## Architecture
 
-Single-file CLI tool with these major sections:
+Single-file CLI tool (~1100 lines) with these major sections:
 
-1. **Configuration calculation** (`calculateConfiguration`): Determines optimal layer configuration (parallel for current, series for turns), trace width/pitch, via farm sizing. Uses progressive half-pitch offsets for series layer sets to minimize inter-layer capacitance.
+1. **Fabrication Constants**: Well-documented constants at top for fab house adaptation
+   - Trace geometry (min width, gap, annular ring)
+   - Copper thickness options
+   - Via geometry
+   - Bend radius K-factor
+   - Pad dimensions
 
-2. **Geometry generation**:
-   - `generateBoardOutline`: Board shape with slits at OD edges for spreading
-   - `generateFoldLines`: Dashed silkscreen at ID fold lines
-   - `generateTabsAndSlots`: Alignment tabs (B-edge) and slots (A-edge) per wedge
-   - `generateTraces`: Copper traces on all layers with offsets
-   - `generateViaFarms`: Via arrays connecting parallel layers
-   - `generateBtoAPads`: Rectangular pads for B-to-A soldering
-   - `generateFlaps`: Start/end/tap flaps with THT pads extending from OD edge
+2. **Core Database**: Expanded list of common toroids
+   - T-series: T25, T30, T37, T44, T50, T68, T80, T94, T106, T130, T157, T200
+   - FT-series: FT37, FT50, FT82, FT114, FT140, FT240
+
+3. **Configuration Calculation** (`calculateConfiguration`): Determines:
+   - Bend radius from FPC + copper thickness
+   - Pitch at ID and OD
+   - Trace width from current requirement
+   - Via count for 2-layer parallel
+   - Fan-out ratio
+
+4. **Geometry Generation**:
+   - `generateEdgeCuts`: Board outline with slits and flap cutouts
+   - `generateSlit`: Individual slits with semicircular rip-stop endings
+   - `generateWindingTraces`: Hockey-stick shaped traces
+   - `generateTraceVias`: Via arrays for 2-layer parallel
+   - `generateLapPads`: SMD pads for B-to-A solder joints
+   - `generateFlapPads`: SMD pads on mounting flaps
+   - `generateStiffener`: Stiffener outlines on User.1 layer
+   - `generateFoldLines`: Dashed silkscreen at fold positions
 
 ## Layer Organization
 
-For multi-layer designs requiring both current capacity and more turns:
-- Adjacent layers are paralleled for current (L1+L2, L3+L4, etc.)
-- Layer sets are in series for more turns
-- Progressive offset (half-pitch per series set) reduces capacitance
-- Via farms aggregate parallel layers before B-to-A solder joints
+Simple 1 or 2 layer FPC:
+- **1 layer**: Single copper layer (F.Cu)
+- **2 layers**: F.Cu and B.Cu in parallel, connected by vias at each winding
+
+For 2-layer designs:
+- Both layers carry the same trace pattern
+- Vias at each end of each trace connect the layers
+- Current capacity doubles compared to 1-layer
+
+## Geometry Model
+
+### FPC Layout (unfolded)
+```
+A-edge (OD, Y=0)
+==========================================================
+|  Flat face 1 (fans out toward OD)                      |
+|-------- Fold Line 1 (slits here) ----------------------|
+|  ID section (fixed pitch, parallel traces)             |
+|-------- Fold Line 2 (slits here) ----------------------|
+|  Flat face 2 (fans out toward OD)                      |
+==========================================================
+B-edge (OD, Y=fpcHeight)
+   ^ START flap                              END flap ^
+```
+
+### Key Dimensions
+- FPC height = 2 * radialThickness + axialHeight
+- radialThickness = (OD - ID) / 2
+- Pitch at ID = (ID * pi) / turns
+- Pitch at OD = (OD * pi) / turns
+
+### Mounting Orientations
+
+**Rolling (default)**: Toroid "rolls" on the PCB like a tire
+- Flaps extend from B-edge (bottom of FPC)
+- Flaps bend tangentially from the toroid surface
+- Good for compact mounting
+
+**Flat**: Toroid lays flat on PCB (axis perpendicular to PCB)
+- Flaps extend from A-edge (top of FPC)
+- Flaps run parallel to toroid axis
+- Good for through-hole style mounting
 
 ## Supported Cores
 
-T68, T50, T37, T200 (with aliases: T-68, FT68, FT-68, etc.)
+All cores accept variations: T68, T-68, FT68, FT-68, t68, ft-68, etc.
+
+| Core  | OD (mm) | ID (mm) | Height (mm) |
+|-------|---------|---------|-------------|
+| T25   | 6.35    | 3.05    | 2.55        |
+| T30   | 7.80    | 3.80    | 3.25        |
+| T37   | 9.50    | 5.20    | 3.25        |
+| T44   | 11.20   | 5.80    | 4.00        |
+| T50   | 12.70   | 7.70    | 4.80        |
+| T68   | 17.50   | 9.40    | 4.80        |
+| T80   | 20.30   | 12.70   | 6.35        |
+| T94   | 23.90   | 14.30   | 9.50        |
+| T106  | 26.90   | 14.50   | 11.10       |
+| T130  | 33.00   | 19.50   | 11.00       |
+| T157  | 40.00   | 23.50   | 14.50       |
+| T200  | 50.80   | 31.75   | 14.00       |
+| FT37  | 9.53    | 4.75    | 3.18        |
+| FT50  | 12.70   | 7.15    | 4.80        |
+| FT82  | 21.00   | 13.00   | 6.35        |
+| FT114 | 29.00   | 19.00   | 7.50        |
+| FT140 | 35.55   | 23.00   | 12.70       |
+| FT240 | 61.00   | 35.55   | 12.70       |
 
 ## Code Style
 
 - 2-space indentation
-- camelCase for variables and functions (e.g., `minGapMm`, `toNm`)
+- camelCase for variables and functions
+- UPPER_SNAKE_CASE for constants
 - Symbolic constants for magic numbers
 
-## Current Implementation Status (Dec 2025)
+## Rendering for Debugging
 
-### Full-Turn Weaving Topology
-The tool now implements **full-turn weaving** for multi-layer designs:
-- Each complete turn stays on one layer pair (L1||L2 or L3||L4)
-- After completing a turn, vias at A-edge transfer current to the other layer pair
-- This keeps all current flowing the same direction around the toroid
-
-Current path: START → L1||L2 trace (A→B) → B-pad wraps/solders to A-pad → vias → L3||L4 trace (A→B) → B-pad wraps/solders → vias → L1||L2 → ... → END
-
-### Key Design Decisions
-1. **B-pads on B_Cu**: Physical bottom layer, faces outward when wrapped, solders to F_Cu A-pads
-2. **A-pads on F_Cu**: Physical top layer, receives solder joint from wrapped B-edge
-3. **Through-hole vias**: At A-edge pads to transfer between layer pairs for alternating turns
-4. **Half-pitch offset**: Series set 1 traces offset by pitch/2 from series set 0
-
-### Rendering for Debugging
 Use kicad-cli to export PDF for visual inspection:
 ```bash
-kicad-cli pcb export pdf test_output.kicad_pcb -o test_output.pdf \
-  --layers "F.Cu,In1.Cu,In2.Cu,B.Cu,Edge.Cuts,F.Silkscreen,B.Silkscreen" --mode-single
+kicad-cli pcb export pdf output.kicad_pcb -o output.pdf \
+  --layers "F.Cu,B.Cu,Edge.Cuts,User.1,F.Silkscreen" --mode-single
 ```
 
-### Known Issues / TODO
-- B-to-A pad alignment may need refinement for proper helix continuity
-- Via placement at B-edge for L1||L2 traces needs anti-pads on In2_Cu (currently using through-hole which may short)
-- Tabs/slots for mechanical locking not yet re-enabled (simplified for debugging)
-- Spreading slits at fold lines not yet implemented
+## Design Constraints
+
+The tool will reject designs that don't fit:
+- Required trace width exceeds available pitch at ID
+- Maximum trace width below fabrication minimum
+
+When a design is rejected, error messages explain the constraint.
